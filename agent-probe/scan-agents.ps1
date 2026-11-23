@@ -19,9 +19,17 @@
 
 [CmdletBinding()]
 param(
-  [string]$OutFile = (Join-Path $PSScriptRoot "agent-scan.json"),
+  # Resolved below: $PSScriptRoot can be empty in param() defaults on Windows PowerShell 5.1.
+  [string]$OutFile = "",
   [string[]]$ExtraDrives = @("D:\", "F:\", "H:\")
 )
+
+if (-not $OutFile) {
+  $scriptDir = $PSScriptRoot
+  if (-not $scriptDir) { $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+  if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
+  $OutFile = Join-Path $scriptDir "agent-scan.json"
+}
 
 $ErrorActionPreference = "SilentlyContinue"
 $found = New-Object System.Collections.Generic.List[object]
@@ -158,8 +166,11 @@ if (Get-Command wsl -ErrorAction SilentlyContinue) {
     $d = $d.Trim()
     Add-Find "WSL" $d "distro" ""
     foreach ($tool in "hermes","openclaw","ollama","claude","codex") {
-      $hit = (& wsl -d $d -- sh -lc "command -v $tool" 2>$null) -replace "`0", ""
-      if ($hit) { Add-Find "WSL command" $tool "in $d" $hit.Trim() }
+      $hit = ((& wsl -d $d -- sh -lc "command -v $tool" 2>$null) -replace "`0", "" | Out-String).Trim()
+      # wsl prints its own errors (e.g. Wsl/Service/E_UNEXPECTED) to stdout, so only
+      # count a zero exit code with an absolute path as a hit.
+      if ($LASTEXITCODE -eq 0 -and $hit -match '^/') { Add-Find "WSL command" $tool "in $d" $hit }
+      elseif ($hit -match 'Wsl/') { Add-Find "WSL error" $tool "in $d" (($hit -split "`r?`n")[-1]).Trim(); break }
     }
   }
 }
