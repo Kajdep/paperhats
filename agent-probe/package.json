@@ -1,0 +1,12 @@
+{
+  "name": "agent-probe",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connection probe for personal AI agents (Hermes, OpenClaw, Grok Bot, Dot, Muse, Cue).",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test server.test.mjs"
+  }
+}
