@@ -141,3 +141,36 @@ test("dashboard and admin endpoints require the admin token", async (t) => {
   assert.equal(ok.status, 200);
   assert.match(await ok.text(), /Agent Probe/);
 });
+
+test("operator input errors return 400, not 500", async (t) => {
+  const { store, server, base } = await start();
+  t.after(() => server.close());
+  const admin = store.config.adminToken;
+  const post = (p, fields) => fetch(`${base}${p}?admin=${admin}`, {
+    method: "POST", redirect: "manual",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(fields),
+  });
+  assert.equal((await post("/admin/agents", { handle: "Bad Handle!" })).status, 400);
+  assert.equal((await post("/admin/agents", { handle: "hermes" })).status, 400);
+  assert.equal((await post("/admin/agents", { handle: "a" })).status, 303);
+  assert.equal((await post("/admin/wake-config/hermes", { url: "https://example.com/w", headerName: "bad header\r\nx: y", headerValue: "v" })).status, 400);
+  assert.equal((await post("/admin/wake-config/hermes", { url: "https://example.com/w", headerName: "Authorization", headerValue: "Bearer k" })).status, 303);
+});
+
+test("a wrong admin token of any length is rejected", async (t) => {
+  const { store, server, base } = await start();
+  t.after(() => server.close());
+  for (const guess of ["", "x", store.config.adminToken.slice(0, -1), store.config.adminToken + "x"]) {
+    assert.equal((await fetch(`${base}/admin/results.json?admin=${encodeURIComponent(guess)}`)).status, 404);
+  }
+});
+
+test("config and state files are private to the owner", { skip: process.platform === "win32" }, async (t) => {
+  const { store, server, dir } = await start();
+  t.after(() => server.close());
+  store.save();
+  for (const f of ["config.json", "state.json"]) {
+    assert.equal(fs.statSync(path.join(dir, f)).mode & 0o077, 0, `${f} must not be group/world readable`);
+  }
+});

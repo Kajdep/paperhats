@@ -81,7 +81,9 @@ for the hub from what actually worked.
 ## Security notes
 
 - Every agent URL and the admin token are secrets. Anyone holding an agent URL can act as that agent **on the probe only**. The probe has no access to anything else.
-- Wake headers you enter in the dashboard are stored in `data/state.json` on your PC and are never shown in the results.
+- `data/config.json` and `data/state.json` hold the tokens and wake keys. They are created owner-only (on Windows, keep `agent-probe\data` inside your user profile or another private folder).
+- The launcher prints the URLs to the console only. It sets `PROBE_QUIET_SECRETS=1`, so `data/server.log` contains no tokens. Do not redirect or transcript the launcher window.
+- Wake headers you enter in the dashboard are never shown in the results.
 - Wake URLs registered by agents must be HTTPS (plain HTTP only for localhost), and wakes are only sent when you click **Send test wake**.
 - Stop the tunnel (Ctrl+C) when you are done. The probe is a test tool, not the hub.
 

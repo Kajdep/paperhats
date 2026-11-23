@@ -30,6 +30,8 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 }
 
 $env:PORT = "$Port"
+# The server's console goes to data\server.log, so keep tokens out of it.
+$env:PROBE_QUIET_SECRETS = "1"
 $serverLog = Join-Path $PSScriptRoot "data\server.log"
 New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot "data") | Out-Null
 $server = Start-Process node -ArgumentList "server.mjs" -NoNewWindow -PassThru -RedirectStandardOutput $serverLog -RedirectStandardError "$serverLog.err"
@@ -69,6 +71,9 @@ try {
   Write-Host "  Public URL : $publicUrl"
   Write-Host "  Dashboard  : $dashboard"
   Write-Host ""
+  # These URLs and the dashboard link contain secrets. Do not run this script with its
+  # output redirected to a file or captured by a transcript or scheduled task log.
+  Write-Host "SENSITIVE: the lines below contain secrets. Do not share or log this window." -ForegroundColor Yellow
   Write-Host "Per-agent MCP URLs (secrets - paste each only into its own agent):"
   foreach ($a in $config.agents) {
     Write-Host ("  @{0,-10} {1}/mcp/{2}" -f $a.handle, $publicUrl, $a.token)

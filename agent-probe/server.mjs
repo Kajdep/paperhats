@@ -43,13 +43,20 @@ function readJson(file, fallback) {
 }
 
 function writeJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  // Config and state hold agent tokens, the admin token and wake keys: owner-only.
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
 const token = (bytes = 18) => crypto.randomBytes(bytes).toString("base64url");
+const digest = (value) => crypto.createHash("sha256").update(String(value ?? "")).digest();
+const safeEqual = (a, b) => crypto.timingSafeEqual(digest(a), digest(b));
+
+/** An error caused by operator input; the HTTP layer answers it with 400. */
+class InputError extends Error {}
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/;
 
 export function createStore(dataDir = DATA_DIR) {
   const configFile = path.join(dataDir, "config.json");
@@ -100,8 +107,7 @@ export function createStore(dataDir = DATA_DIR) {
     },
     agentByToken: (t) => {
       if (!t) return undefined;
-      const want = crypto.createHash("sha256").update(String(t)).digest();
-      return config.agents.find((a) => crypto.timingSafeEqual(crypto.createHash("sha256").update(a.token).digest(), want));
+      return config.agents.find((a) => safeEqual(a.token, t));
     },
     agentByHandle: (h) => config.agents.find((a) => a.handle === h),
     agentState,
@@ -109,8 +115,8 @@ export function createStore(dataDir = DATA_DIR) {
     log,
     eventsFile,
     addAgent(handle, name) {
-      if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(handle)) throw new Error("handle must be lowercase letters, digits and dashes");
-      if (config.agents.some((a) => a.handle === handle)) throw new Error("handle already exists");
+      if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(handle)) throw new InputError("handle must be 1-40 lowercase letters, digits and dashes");
+      if (config.agents.some((a) => a.handle === handle)) throw new InputError("handle already exists");
       const agent = { handle, name: name || handle, platform: "other", wake: "Unknown", token: token() };
       config.agents.push(agent);
       writeJson(configFile, config);
@@ -360,16 +366,27 @@ const MAX_BODY = 1_000_000;
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let settled = false;
     const chunks = [];
     req.on("data", (c) => {
+      if (settled) return;
       size += c.length;
       if (size > MAX_BODY) {
+        settled = true;
         reject(new Error("body too large"));
         req.destroy();
       } else chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    req.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 
@@ -484,7 +501,7 @@ export function createServer(store, { fetchImpl = fetch } = {}) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean);
-    const isAdmin = url.searchParams.get("admin") === store.config.adminToken;
+    const isAdmin = safeEqual(url.searchParams.get("admin"), store.config.adminToken);
     const origin = PUBLIC_URL || `${String(req.headers["x-forwarded-proto"] || "http").split(",")[0]}://${req.headers.host}`;
     try {
       if (req.method === "OPTIONS") return send(res, 204);
@@ -554,6 +571,8 @@ export function createServer(store, { fetchImpl = fetch } = {}) {
         const s = store.agentState(agent.handle);
         const wakeUrl = f.url ? validUrl(f.url) : null;
         if (f.url && !wakeUrl) return send(res, 400, { error: "wake URL must be https (http only for localhost)" });
+        if (f.headerName && !HEADER_NAME.test(f.headerName)) return send(res, 400, { error: "header name must be a single HTTP token, e.g. Authorization" });
+        if (f.headerValue && /[\r\n\0]/.test(f.headerValue)) return send(res, 400, { error: "header value must be one line" });
         s.wake = {
           ...(s.wake || {}),
           url: wakeUrl,
@@ -577,6 +596,7 @@ export function createServer(store, { fetchImpl = fetch } = {}) {
       }
       return send(res, 404, { error: "not_found" });
     } catch (err) {
+      if (err instanceof InputError) return send(res, 400, { error: err.message });
       return send(res, 500, { error: String(err?.message || err) });
     }
   });
@@ -591,10 +611,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log(`\nAgent probe listening on port ${PORT}`);
     const base = PUBLIC_URL || `http://localhost:${PORT}`;
     console.log(`Local:       http://localhost:${PORT}`);
-    console.log(`Dashboard:   ${base}/?admin=${store.config.adminToken}`);
+    console.log(`Dashboard:   ${base}/?admin=${process.env.PROBE_QUIET_SECRETS === "1" ? "<admin token in data/config.json>" : store.config.adminToken}`);
     console.log(`             (open it through your tunnel URL and the setup prompts use that URL)\n`);
-    console.log(`Per-agent MCP URLs (treat as secrets):`);
-    for (const a of store.config.agents) console.log(`  @${a.handle.padEnd(10)} ${base}/mcp/${a.token}`);
+    if (process.env.PROBE_QUIET_SECRETS === "1") {
+      console.log(`Per-agent MCP URLs: not printed (PROBE_QUIET_SECRETS=1). See the dashboard.`);
+    } else {
+      console.log(`Per-agent MCP URLs (treat as secrets):`);
+      for (const a of store.config.agents) console.log(`  @${a.handle.padEnd(10)} ${base}/mcp/${a.token}`);
+    }
     console.log(`\nData: ${DATA_DIR}`);
   });
 }
